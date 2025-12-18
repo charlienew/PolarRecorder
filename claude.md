@@ -85,7 +85,7 @@ The app uses a linear navigation flow:
 
 ## Key Dependencies
 
-- **Polar BLE SDK 6.12.0** (for Bluetooth communication with Polar devices)
+- **Polar BLE SDK 6.13.0** (for Bluetooth communication with Polar devices)
   - Supports: Polar Loop, Polar 360, H10, H9, H7, Verity Sense, OH1, OH1+, Ignite 3, Vantage V3, Vantage M3, Grit X2 Pro, Grit X2, Pacer, Pacer Pro
 - Jetpack Compose (UI framework)
 - Navigation Compose (navigation)
@@ -116,21 +116,24 @@ The app uses a linear navigation flow:
 
 The following changes were made to add full support for the Polar Loop device:
 
-#### 1. Polar BLE SDK Update (6.2.0 → 6.12.0)
+#### 1. Polar BLE SDK Update (6.2.0 → 6.13.0)
 
 **File:** `gradle/libs.versions.toml`
 **Line:** 21
 
 ```toml
 # Changed from: polarBleSdk = "6.2.0"
-polarBleSdk = "6.12.0"
+polarBleSdk = "6.13.0"
 ```
 
-**Reason:** Polar Loop and Polar 360 devices require SDK version 6.4.0+ for proper support. Version 6.12.0 includes:
+**Reason:** Polar Loop and Polar 360 devices require SDK version 6.4.0+ for proper support. Version 6.13.0 includes:
 
 - Official Polar Loop and Polar 360 device support
 - Protocol improvements for newer devices
 - Bug fixes for device capability detection
+- Split offline skin temperature measurement support
+- Training session deletion support
+- Faster offline listing
 - No breaking changes affecting this app's functionality
 
 #### 2. Minimum SDK Version Update (24 → 26)
@@ -180,7 +183,7 @@ Based on testing and SDK documentation, the Polar Loop supports:
 
 - PPG (Photoplethysmography) - 22Hz, 24-bit, 3 channels
 - ACC (Accelerometer) - 50Hz, 16-bit, 8G range
-- Temperature - Configurable rates (1Hz, 2Hz, 4Hz)
+- Skin Temperature - 1Hz, 32-bit, 1 channel
 
 **❌ Not Supported in SDK Mode:**
 
@@ -196,6 +199,7 @@ Tested with Polar Loop Gen 2 (device ID: 11455734):
 - ✅ Device detection and connection working
 - ✅ PPG data streaming at 22Hz successfully
 - ✅ ACC data streaming at 50Hz successfully
+- ✅ Skin temperature streaming at 1Hz successfully
 - ✅ All 3 PPG channels recorded correctly in JSONL format
 - ✅ UI now displays correct PPG values (~89K range)
 - ✅ Auto-reconnect functionality working
@@ -285,6 +289,93 @@ Added detailed logging throughout the capability detection process:
 - Only run one Polar app at a time
 
 **Documentation:** Added comprehensive troubleshooting section to [README.md](README.md) explaining this limitation and providing multiple solutions.
+
+### Skin Temperature Recording Support
+
+**Date:** December 18, 2025
+
+Added full support for skin temperature recording from Polar Loop and other devices that report `SKIN_TEMPERATURE` capability.
+
+#### The Issue
+
+The Polar Loop (firmware 4.0.7) reports `SKIN_TEMPERATURE` as an available data type, but the app only supported the generic `TEMPERATURE` type. This caused crashes when attempting to record skin temperature because:
+
+1. `SKIN_TEMPERATURE` wasn't in the list of supported data types for settings requests
+2. Empty settings `{}` were returned instead of proper configuration
+3. The streaming API failed when starting with invalid settings
+
+#### The Solution
+
+**Files Modified:**
+
+- [PolarManager.kt](app/app/src/main/java/com/wboelens/polarrecorder/managers/PolarManager.kt)
+- [RecordingManager.kt](app/app/src/main/java/com/wboelens/polarrecorder/managers/RecordingManager.kt)
+- [DeviceSettingsDialog.kt](app/app/src/main/java/com/wboelens/polarrecorder/ui/dialogs/DeviceSettingsDialog.kt)
+
+**Key Changes:**
+
+1. **Added SKIN_TEMPERATURE to settings request** ([PolarManager.kt:577](app/app/src/main/java/com/wboelens/polarrecorder/managers/PolarManager.kt#L577))
+
+   ```kotlin
+   PolarDeviceDataType.TEMPERATURE,
+   PolarDeviceDataType.SKIN_TEMPERATURE -> {
+     // Request settings from device
+   }
+   ```
+
+2. **Added streaming support** ([PolarManager.kt:683-686](app/app/src/main/java/com/wboelens/polarrecorder/managers/PolarManager.kt#L683-L686))
+
+   ```kotlin
+   PolarDeviceDataType.SKIN_TEMPERATURE -> {
+     Log.d(TAG, "Starting SKIN_TEMPERATURE streaming for $deviceId")
+     api.startSkinTemperatureStreaming(deviceId, sensorSettings)
+   }
+   ```
+
+3. **Added data processing** ([RecordingManager.kt:49-50, 309-310](app/app/src/main/java/com/wboelens/polarrecorder/managers/RecordingManager.kt#L49-L50))
+
+   ```kotlin
+   // Both TEMPERATURE and SKIN_TEMPERATURE use PolarTemperatureData
+   PolarBleApi.PolarDeviceDataType.SKIN_TEMPERATURE ->
+       (data as PolarTemperatureData).samples.lastOrNull()?.temperature
+   ```
+
+4. **Added UI display name** ([DeviceSettingsDialog.kt:565](app/app/src/main/java/com/wboelens/polarrecorder/ui/dialogs/DeviceSettingsDialog.kt#L565))
+
+   ```kotlin
+   PolarDeviceDataType.SKIN_TEMPERATURE -> "Skin Temperature"
+   ```
+
+#### Important Technical Details
+
+**Data Type Difference:**
+
+- **`TEMPERATURE`**: Generic temperature streaming (older devices, some firmware versions)
+- **`SKIN_TEMPERATURE`**: Specific skin temperature streaming (Polar Loop firmware 2.0.0+, Polar 360)
+
+**Shared Data Structure:**
+
+Both `startTemperatureStreaming()` and `startSkinTemperatureStreaming()` return the same data type: `PolarTemperatureData`. This is documented in [Polar SDK GitHub issue #656](https://github.com/polarofficial/polar-ble-sdk/issues/656).
+
+**Polar Loop Configuration:**
+
+- Sample rate: 1 Hz (1 sample per second)
+- Resolution: 32-bit
+- Channels: 1
+
+**Known Limitation:**
+
+The Polar Loop does not support `requestFullStreamSettings()` for SKIN_TEMPERATURE, which generates a `PolarOperationNotSupported` error. This is expected and handled gracefully by the code using `onErrorReturn { PolarSensorSetting(emptyMap()) }`. The available settings are sufficient for streaming.
+
+#### Verification
+
+Verified with Polar Loop Gen 2 (firmware 4.0.7):
+
+- ✅ Settings request: `{SAMPLE_RATE=[1], RESOLUTION=[32], CHANNELS=[1]}`
+- ✅ Streaming starts successfully
+- ✅ Data received at 1 Hz
+- ✅ Data saved to JSONL files correctly
+- ✅ No crashes or errors during recording
 
 ## Related Files
 
