@@ -45,6 +45,8 @@ fun getDataFragment(dataType: PolarBleApi.PolarDeviceDataType, data: Any): Float
     PolarBleApi.PolarDeviceDataType.GYRO -> (data as PolarGyroData).samples.lastOrNull()?.x
     PolarBleApi.PolarDeviceDataType.TEMPERATURE ->
         (data as PolarTemperatureData).samples.lastOrNull()?.temperature
+    PolarBleApi.PolarDeviceDataType.SKIN_TEMPERATURE ->
+        (data as PolarTemperatureData).samples.lastOrNull()?.temperature
     PolarBleApi.PolarDeviceDataType.MAGNETOMETER ->
         (data as PolarMagnetometerData).samples.lastOrNull()?.x
     else -> throw IllegalArgumentException("Unsupported data type: $dataType")
@@ -261,6 +263,11 @@ class RecordingManager(
         .doOnSubscribe { logViewModel.addLogMessage("Starting $dataType stream for $deviceId") }
         .doOnError { error ->
           logViewModel.addLogError("Stream error for $deviceId - $dataType: ${error.message}")
+          if (dataType == PolarBleApi.PolarDeviceDataType.TEMPERATURE ||
+              dataType == PolarBleApi.PolarDeviceDataType.SKIN_TEMPERATURE) {
+            logViewModel.addLogError("$dataType stream error details: ${error.javaClass.name}")
+            error.printStackTrace()
+          }
         }
         .doOnComplete {
           logViewModel.addLogError("Stream completed unexpectedly for $deviceId - $dataType")
@@ -276,7 +283,16 @@ class RecordingManager(
               _lastData.value =
                   _lastData.value.toMutableMap().apply {
                     val deviceData = this[deviceId]?.toMutableMap() ?: mutableMapOf()
-                    deviceData[dataType] = getDataFragment(dataType, data)
+                    try {
+                      deviceData[dataType] = getDataFragment(dataType, data)
+                    } catch (e: Exception) {
+                      if (dataType == PolarBleApi.PolarDeviceDataType.TEMPERATURE ||
+                          dataType == PolarBleApi.PolarDeviceDataType.SKIN_TEMPERATURE) {
+                        logViewModel.addLogError("$dataType: getDataFragment failed: ${e.message}")
+                        e.printStackTrace()
+                      }
+                      throw e
+                    }
                     this[deviceId] = deviceData
                   }
 
@@ -290,7 +306,8 @@ class RecordingManager(
                     PolarBleApi.PolarDeviceDataType.GYRO -> (data as PolarGyroData).samples
                     PolarBleApi.PolarDeviceDataType.TEMPERATURE ->
                         (data as PolarTemperatureData).samples
-
+                    PolarBleApi.PolarDeviceDataType.SKIN_TEMPERATURE ->
+                        (data as PolarTemperatureData).samples
                     PolarBleApi.PolarDeviceDataType.MAGNETOMETER ->
                         (data as PolarMagnetometerData).samples
 
@@ -301,19 +318,37 @@ class RecordingManager(
                   .asList()
                   .filter { it.isEnabled.value }
                   .forEach { saver ->
-                    saver.saveData(
-                        phoneTimestamp,
-                        deviceId,
-                        currentRecordingName,
-                        dataType.name,
-                        batchData,
-                    )
+                    try {
+                      saver.saveData(
+                          phoneTimestamp,
+                          deviceId,
+                          currentRecordingName,
+                          dataType.name,
+                          batchData,
+                      )
+                    } catch (e: Exception) {
+                      if (dataType == PolarBleApi.PolarDeviceDataType.TEMPERATURE ||
+                          dataType == PolarBleApi.PolarDeviceDataType.SKIN_TEMPERATURE) {
+                        logViewModel.addLogError(
+                            "$dataType: Failed to save data: ${e.message}",
+                        )
+                        e.printStackTrace()
+                      }
+                      throw e
+                    }
                   }
             },
             { error ->
               logViewModel.addLogError(
                   "${dataType.name} recording failed for device $deviceId: ${error.message}",
               )
+              if (dataType == PolarBleApi.PolarDeviceDataType.TEMPERATURE ||
+                  dataType == PolarBleApi.PolarDeviceDataType.SKIN_TEMPERATURE) {
+                logViewModel.addLogError(
+                    "$dataType: Full error stack trace logged to console",
+                )
+                error.printStackTrace()
+              }
             },
         )
   }

@@ -107,6 +107,9 @@ class PolarManager(
 
           override fun deviceConnected(polarDeviceInfo: PolarDeviceInfo) {
             logViewModel.addLogMessage(
+                "Device ${polarDeviceInfo.deviceId} connected (${polarDeviceInfo.name})"
+            )
+            logViewModel.addLogMessage(
                 "Fetching capabilities for device ${polarDeviceInfo.deviceId}"
             )
             deviceViewModel.updateConnectionState(
@@ -120,18 +123,65 @@ class PolarManager(
                     .subscribe({ _ -> // Explicitly using Consumer<Unit> overload
                       MainScope().launch {
                         // Wait a bit so that FEATURE_DEVICE_INFO is more likely to be ready
-                        kotlinx.coroutines.delay(1000)
+                        // Increased delay and added polling for devices with newer firmware
+                        logViewModel.addLogMessage(
+                            "Waiting for features to be ready for ${polarDeviceInfo.deviceId}"
+                        )
+
+                        // Poll for FEATURE_DEVICE_INFO readiness with longer timeout
+                        var waitTime = 0L
+                        val maxWaitTime = 5000L // 5 seconds max wait
+                        val pollInterval = 500L // Check every 500ms
+
+                        while (waitTime < maxWaitTime) {
+                          kotlinx.coroutines.delay(pollInterval)
+                          waitTime += pollInterval
+
+                          val readyFeatures = deviceFeatureReadiness[polarDeviceInfo.deviceId]
+                          if (
+                              readyFeatures?.contains(
+                                  PolarBleApi.PolarBleSdkFeature.FEATURE_DEVICE_INFO
+                              ) == true ||
+                                  readyFeatures?.contains(
+                                      PolarBleApi.PolarBleSdkFeature.FEATURE_POLAR_ONLINE_STREAMING
+                                  ) == true
+                          ) {
+                            logViewModel.addLogMessage(
+                                "Key features detected after ${waitTime}ms for ${polarDeviceInfo.deviceId}"
+                            )
+                            break
+                          }
+
+                          if (waitTime % 1000L == 0L) {
+                            logViewModel.addLogMessage(
+                                "Still waiting for features... (${waitTime}ms elapsed)"
+                            )
+                          }
+                        }
+
+                        // Log which features are currently ready
+                        val readyFeatures = deviceFeatureReadiness[polarDeviceInfo.deviceId]
+                        logViewModel.addLogMessage(
+                            "Features ready for ${polarDeviceInfo.deviceId} after ${waitTime}ms: ${readyFeatures?.joinToString(", ") ?: "none"}"
+                        )
+
                         var capabilities: DeviceStreamCapabilities?
                         try {
                           capabilities = fetchDeviceCapabilities(polarDeviceInfo.deviceId).await()
+                          logViewModel.addLogMessage(
+                              "Successfully fetched capabilities for ${polarDeviceInfo.deviceId}: ${capabilities.availableTypes.joinToString(", ")}"
+                          )
                         } catch (error: Throwable) {
                           Log.e(TAG, "Failed to fetch device capabilities", error)
                           logViewModel.addLogError(
-                              "Failed to fetch device capabilities for ${polarDeviceInfo.deviceId} (${error}), falling back to alternative method",
+                              "Failed to fetch device capabilities for ${polarDeviceInfo.deviceId} (${error.message}), falling back to alternative method",
                               false,
                           )
                           capabilities =
                               fetchDeviceCapabilitiesViaFallback(polarDeviceInfo.deviceId)
+                          logViewModel.addLogMessage(
+                              "Fallback capabilities for ${polarDeviceInfo.deviceId}: ${capabilities.availableTypes.joinToString(", ")}"
+                          )
                         }
 
                         logViewModel.addLogMessage(
@@ -192,6 +242,7 @@ class PolarManager(
               feature: PolarBleApi.PolarBleSdkFeature,
           ) {
             Log.d(TAG, "Feature $feature ready for device $identifier")
+            logViewModel.addLogMessage("Feature ready for $identifier: $feature")
             deviceFeatureReadiness.getOrPut(identifier) { mutableSetOf() }.add(feature)
           }
 
@@ -257,22 +308,33 @@ class PolarManager(
   private fun fetchDeviceCapabilities(deviceId: String): Single<DeviceStreamCapabilities> {
     return Single.create { emitter ->
           // Check if FEATURE_DEVICE_INFO is available
+          logViewModel.addLogMessage(
+              "Checking if FEATURE_DEVICE_INFO is ready for $deviceId"
+          )
           if (isFeatureAvailable(deviceId, PolarBleApi.PolarBleSdkFeature.FEATURE_DEVICE_INFO)) {
+            logViewModel.addLogMessage("FEATURE_DEVICE_INFO is ready for $deviceId")
             emitter.onSuccess(Unit)
           } else {
+            logViewModel.addLogMessage("FEATURE_DEVICE_INFO is NOT ready for $deviceId")
             emitter.onError(IllegalStateException("Device info feature not ready"))
           }
         }
-        .flatMap { getAvailableOnlineStreamDataTypes(deviceId) }
+        .flatMap {
+          logViewModel.addLogMessage("Getting available online stream data types for $deviceId")
+          getAvailableOnlineStreamDataTypes(deviceId)
+        }
         .retryWhen { errors ->
-          errors.take(MAX_RETRY_ERRORS).flatMap { error ->
-            logViewModel.addLogError(
-                "Failed to fetch stream capabilities (${error}), retrying",
-                false,
-            )
-            // Wait 2 seconds before retrying
-            Flowable.timer(2, TimeUnit.SECONDS)
-          }
+          errors.zipWith(Flowable.range(1, MAX_RETRY_ERRORS.toInt())) { error, attempt ->
+                Pair(error, attempt)
+              }
+              .flatMap { (error, attempt) ->
+                logViewModel.addLogError(
+                    "Failed to fetch stream capabilities for $deviceId (attempt $attempt/${MAX_RETRY_ERRORS}): ${error.message}",
+                    false,
+                )
+                // Wait 2 seconds before retrying
+                Flowable.timer(2, TimeUnit.SECONDS)
+              }
         }
         .flatMap { types ->
           val settingsRequests =
@@ -297,20 +359,45 @@ class PolarManager(
   }
 
   private fun fetchDeviceCapabilitiesViaFallback(deviceId: String): DeviceStreamCapabilities {
+    logViewModel.addLogMessage("Using fallback method to determine capabilities for $deviceId")
     val availableTypes = mutableSetOf<PolarDeviceDataType>()
     val settings = mutableMapOf<PolarDeviceDataType, Pair<PolarSensorSetting, PolarSensorSetting>>()
 
-    deviceFeatureReadiness[deviceId]?.forEach { feature ->
+    val readyFeatures = deviceFeatureReadiness[deviceId]
+    logViewModel.addLogMessage(
+        "Ready features for fallback: ${readyFeatures?.joinToString(", ") ?: "none"}"
+    )
+
+    readyFeatures?.forEach { feature ->
       when (feature) {
         PolarBleApi.PolarBleSdkFeature.FEATURE_HR -> {
+          logViewModel.addLogMessage("Adding HR capability via fallback")
           availableTypes.add(PolarDeviceDataType.HR)
           settings[PolarDeviceDataType.HR] =
               Pair(PolarSensorSetting(emptyMap()), PolarSensorSetting(emptyMap()))
         }
+        PolarBleApi.PolarBleSdkFeature.FEATURE_POLAR_ONLINE_STREAMING -> {
+          // For devices with online streaming, try to detect common capabilities
+          // This is particularly important for Polar Loop which supports PPG, ACC, etc.
+          logViewModel.addLogMessage(
+              "Device has FEATURE_POLAR_ONLINE_STREAMING, attempting to detect common data types"
+          )
+        }
         else -> {
-          /* no other features seem related to capabilities */
+          logViewModel.addLogMessage("Feature $feature does not map to data types in fallback")
         }
       }
+    }
+
+    // If we have FEATURE_POLAR_ONLINE_STREAMING but no specific data types detected,
+    // we may need to try querying the device directly for each common type
+    if (
+        readyFeatures?.contains(PolarBleApi.PolarBleSdkFeature.FEATURE_POLAR_ONLINE_STREAMING) ==
+            true
+    ) {
+      logViewModel.addLogMessage(
+          "Device supports online streaming. Note: Actual capabilities cannot be determined without FEATURE_DEVICE_INFO"
+      )
     }
 
     return DeviceStreamCapabilities(availableTypes, settings)
@@ -386,9 +473,11 @@ class PolarManager(
 
   fun connectToDevice(deviceId: String) {
     try {
+      logViewModel.addLogMessage("Attempting to connect to device $deviceId")
       api.connectToDevice(deviceId)
     } catch (e: PolarInvalidArgument) {
       Log.e(TAG, "Connection failed: ${e.message}", e)
+      logViewModel.addLogError("Connection to $deviceId failed: ${e.message}")
       deviceViewModel.updateConnectionState(deviceId, ConnectionState.FAILED)
     }
   }
@@ -410,21 +499,32 @@ class PolarManager(
 
   fun scanForDevices() {
     Log.d(TAG, "Starting scan")
+    logViewModel.addLogMessage("Starting Bluetooth scan for Polar devices")
     _isRefreshing.value = true
     scanDisposable?.dispose()
+
+    var devicesFound = 0
 
     scanDisposable =
         api.searchForDevice()
             .observeOn(AndroidSchedulers.mainThread())
             .subscribe(
-                { deviceInfo -> deviceViewModel.addDevice(deviceInfo) },
+                { deviceInfo ->
+                  devicesFound++
+                  logViewModel.addLogMessage(
+                      "Device found: ${deviceInfo.name} (${deviceInfo.deviceId})"
+                  )
+                  deviceViewModel.addDevice(deviceInfo)
+                },
                 { error ->
-                  logViewModel.addLogMessage("Scan error: ${error.message}")
+                  logViewModel.addLogError("Scan error: ${error.message}")
+                  logViewModel.addLogMessage("Scan completed. Total devices found: $devicesFound")
 
                   Log.d(TAG, "Stopping scan")
                   _isRefreshing.value = false
                 },
                 {
+                  logViewModel.addLogMessage("Scan completed. Total devices found: $devicesFound")
                   Log.d(TAG, "Stopping scan")
                   _isRefreshing.value = false
                 },
@@ -472,13 +572,28 @@ class PolarManager(
         PolarDeviceDataType.ACC,
         PolarDeviceDataType.GYRO,
         PolarDeviceDataType.MAGNETOMETER,
-        PolarDeviceDataType.PPG -> {
-          Log.d(TAG, "Getting stream settings for $dataType")
-          api.requestStreamSettings(deviceId, dataType).flatMap { availableSettings ->
-            api.requestFullStreamSettings(deviceId, dataType)
-                .onErrorReturn { PolarSensorSetting(emptyMap()) }
-                .map { allSettings -> Pair(availableSettings, allSettings) }
-          }
+        PolarDeviceDataType.PPG,
+        PolarDeviceDataType.TEMPERATURE,
+        PolarDeviceDataType.SKIN_TEMPERATURE -> {
+          Log.d(TAG, "Getting stream settings for $dataType on device $deviceId")
+          api.requestStreamSettings(deviceId, dataType)
+              .doOnSuccess { settings ->
+                Log.d(TAG, "$dataType available settings received: ${settings.settings}")
+              }
+              .doOnError { error ->
+                Log.e(TAG, "$dataType requestStreamSettings failed: ${error.message}", error)
+              }
+              .flatMap { availableSettings ->
+                api.requestFullStreamSettings(deviceId, dataType)
+                    .doOnSuccess { fullSettings ->
+                      Log.d(TAG, "$dataType full settings received: ${fullSettings.settings}")
+                    }
+                    .onErrorReturn { error ->
+                      Log.e(TAG, "$dataType requestFullStreamSettings failed: ${error.message}", error)
+                      PolarSensorSetting(emptyMap())
+                    }
+                    .map { allSettings -> Pair(availableSettings, allSettings) }
+              }
         }
         else -> Single.just(Pair(PolarSensorSetting(emptyMap()), PolarSensorSetting(emptyMap())))
       }
@@ -535,15 +650,44 @@ class PolarManager(
       dataType: PolarDeviceDataType,
       sensorSettings: PolarSensorSetting,
   ): Flowable<*> {
+    Log.d(TAG, "startStreaming called for $dataType on device $deviceId with settings: ${sensorSettings.settings}")
     return when (dataType) {
-      PolarDeviceDataType.HR -> api.startHrStreaming(deviceId)
-      PolarDeviceDataType.PPI -> api.startPpiStreaming(deviceId)
-      PolarDeviceDataType.ACC -> api.startAccStreaming(deviceId, sensorSettings)
-      PolarDeviceDataType.PPG -> api.startPpgStreaming(deviceId, sensorSettings)
-      PolarDeviceDataType.ECG -> api.startEcgStreaming(deviceId, sensorSettings)
-      PolarDeviceDataType.GYRO -> api.startGyroStreaming(deviceId, sensorSettings)
-      PolarDeviceDataType.TEMPERATURE -> api.startTemperatureStreaming(deviceId, sensorSettings)
-      PolarDeviceDataType.MAGNETOMETER -> api.startMagnetometerStreaming(deviceId, sensorSettings)
+      PolarDeviceDataType.HR -> {
+        Log.d(TAG, "Starting HR streaming for $deviceId")
+        api.startHrStreaming(deviceId)
+      }
+      PolarDeviceDataType.PPI -> {
+        Log.d(TAG, "Starting PPI streaming for $deviceId")
+        api.startPpiStreaming(deviceId)
+      }
+      PolarDeviceDataType.ACC -> {
+        Log.d(TAG, "Starting ACC streaming for $deviceId")
+        api.startAccStreaming(deviceId, sensorSettings)
+      }
+      PolarDeviceDataType.PPG -> {
+        Log.d(TAG, "Starting PPG streaming for $deviceId")
+        api.startPpgStreaming(deviceId, sensorSettings)
+      }
+      PolarDeviceDataType.ECG -> {
+        Log.d(TAG, "Starting ECG streaming for $deviceId")
+        api.startEcgStreaming(deviceId, sensorSettings)
+      }
+      PolarDeviceDataType.GYRO -> {
+        Log.d(TAG, "Starting GYRO streaming for $deviceId")
+        api.startGyroStreaming(deviceId, sensorSettings)
+      }
+      PolarDeviceDataType.TEMPERATURE -> {
+        Log.d(TAG, "Starting TEMPERATURE streaming for $deviceId")
+        api.startTemperatureStreaming(deviceId, sensorSettings)
+      }
+      PolarDeviceDataType.SKIN_TEMPERATURE -> {
+        Log.d(TAG, "Starting SKIN_TEMPERATURE streaming for $deviceId")
+        api.startSkinTemperatureStreaming(deviceId, sensorSettings)
+      }
+      PolarDeviceDataType.MAGNETOMETER -> {
+        Log.d(TAG, "Starting MAGNETOMETER streaming for $deviceId")
+        api.startMagnetometerStreaming(deviceId, sensorSettings)
+      }
       else -> throw IllegalArgumentException("Unsupported data type: $dataType")
     }
   }

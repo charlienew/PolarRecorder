@@ -22,6 +22,64 @@ The app supports data streaming from Polar watches, however, specific setup step
 
 The `code_examples/` directory contains sample code for processing recorded data in Python and R. More examples will be added over time, contributions are welcome!
 
+## Troubleshooting
+
+### Device Not Showing Up During Scan
+
+If your Polar device is not being discovered during Bluetooth scanning, the most common cause is a **Bluetooth connection conflict with the Polar Flow app** (or other Polar apps).
+
+**Symptoms:**
+
+- Device powers on and appears to be working
+- Other Polar apps can connect to the device
+- Polar Recorder cannot find the device during scanning
+- Other Polar devices (like H10) may work fine
+
+**Root Cause:**
+
+When the Polar Flow app is installed and has previously connected to your device, it may maintain an active or reserved Bluetooth connection. This prevents the device from advertising itself to other apps during BLE scanning, making it invisible to Polar Recorder.
+
+**Solutions (choose one):**
+
+1. **Temporarily Uninstall Polar Flow** (quickest solution)
+   - Uninstall the Polar Flow app
+   - Open Polar Recorder and scan for devices
+   - Your device should now be discoverable
+   - You can reinstall Flow later if needed
+
+2. **Disable Bluetooth Permission for Flow**
+   - Go to Android Settings → Apps → Polar Flow
+   - Disable the Bluetooth permission
+   - Open Polar Recorder and scan
+   - Re-enable the permission when you want to use Flow again
+
+3. **Disconnect Device from Flow**
+   - Open the Polar Flow app
+   - Disconnect or unpair your Polar device
+   - Force close the Flow app (from Android's recent apps)
+   - Wait a few seconds
+   - Open Polar Recorder and scan
+
+4. **Ensure Only One App is Running**
+   - Close Polar Flow completely (swipe it away from recent apps)
+   - Wait 5-10 seconds for Bluetooth to release
+   - Open Polar Recorder and scan
+
+**Note:** This is a limitation of Bluetooth LE on Android, not a bug in either app. Only one app can maintain an active connection to a Bluetooth device at a time.
+
+### Connection Issues After Firmware Updates
+
+If you experience connection issues after updating your device firmware:
+
+1. Ensure you're using the latest version of Polar Recorder
+2. Try the solutions listed above for connection conflicts
+3. Restart your device by turning it off and on
+4. Restart Bluetooth on your phone (toggle it off and on)
+5. If issues persist, please report them on the [GitHub Issues](https://github.com/boelensman1/polarrecorder/issues) page with:
+   - Device model
+   - New firmware version
+   - Logs from the connection attempt (use a logcat app)
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.

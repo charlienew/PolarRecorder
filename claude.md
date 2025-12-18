@@ -201,6 +201,91 @@ Tested with Polar Loop Gen 2 (device ID: 11455734):
 - ✅ Auto-reconnect functionality working
 - ℹ️ HR/PPI not available in SDK Mode (expected behavior)
 
+## December 2025 Updates - SDK 6.13.0 and Debugging Enhancements
+
+### Polar BLE SDK Update (6.12.0 → 6.13.0)
+
+**File:** `gradle/libs.versions.toml`
+**Line:** 21
+
+```toml
+# Changed from: polarBleSdk = "6.12.0"
+polarBleSdk = "6.13.0"
+```
+
+**Reason:** Updated to latest SDK version (released December 16, 2024). Version 6.13.0 includes:
+
+- Training session deletion support
+- Faster offline listing
+- Exercise status notifications
+- Split offline skin temperature measurement support
+- General bug fixes and improvements
+
+### Enhanced Connection Debugging
+
+Added comprehensive logging throughout the connection flow to help diagnose device discovery and connection issues.
+
+#### 1. Feature Polling with Extended Timeout
+
+**File:** `app/src/main/java/com/wboelens/polarrecorder/managers/PolarManager.kt`
+**Lines:** 131-166
+
+```kotlin
+// Poll for FEATURE_DEVICE_INFO readiness with longer timeout
+var waitTime = 0L
+val maxWaitTime = 5000L // 5 seconds max wait
+val pollInterval = 500L // Check every 500ms
+
+while (waitTime < maxWaitTime) {
+  kotlinx.coroutines.delay(pollInterval)
+  waitTime += pollInterval
+
+  val readyFeatures = deviceFeatureReadiness[polarDeviceInfo.deviceId]
+  if (readyFeatures?.contains(PolarBleApi.PolarBleSdkFeature.FEATURE_DEVICE_INFO) == true ||
+      readyFeatures?.contains(PolarBleApi.PolarBleSdkFeature.FEATURE_POLAR_ONLINE_STREAMING) == true) {
+    logViewModel.addLogMessage("Key features detected after ${waitTime}ms")
+    break
+  }
+}
+```
+
+**Reason:** Changed from fixed 1-second delay to intelligent polling up to 5 seconds. This accommodates devices with newer firmware that may take longer to signal feature readiness.
+
+#### 2. Device Discovery Logging
+
+**File:** `app/src/main/java/com/wboelens/polarrecorder/managers/PolarManager.kt`
+**Lines:** 411-442
+
+Added detailed logging for device scanning:
+
+- Shows when scans start/stop
+- Logs each discovered device with name and ID
+- Counts total devices found per scan
+- Helps identify BLE scanning issues
+
+#### 3. Enhanced Capability Fetching Logs
+
+Added detailed logging throughout the capability detection process:
+
+- Feature readiness checks
+- Retry attempts with count
+- Fallback method usage
+- Success/failure for each step
+
+### Troubleshooting: Bluetooth Connection Conflicts
+
+**Common Issue:** Device not discoverable during scanning despite being powered on.
+
+**Root Cause:** Bluetooth connection conflict with Polar Flow app or other Polar apps. When Flow maintains an active/reserved connection, it prevents the device from advertising to other apps during BLE scanning.
+
+**Solution:**
+
+- Uninstall or disable Bluetooth permission for Polar Flow
+- Disconnect device from Flow before using Polar Recorder
+- Only run one Polar app at a time
+
+**Documentation:** Added comprehensive troubleshooting section to [README.md](README.md) explaining this limitation and providing multiple solutions.
+
 ## Related Files
 
 - [README.md](README.md) - User-facing documentation
@@ -211,17 +296,20 @@ Tested with Polar Loop Gen 2 (device ID: 11455734):
 ## Common Tasks
 
 ### Adding a new data saver
+
 1. Create new class implementing `DataSaver` interface in [dataSavers/](app/app/src/main/java/com/wboelens/polarrecorder/dataSavers/)
 2. Register in [DataSavers.kt](app/app/src/main/java/com/wboelens/polarrecorder/dataSavers/DataSavers.kt)
 3. Add settings dialog in [ui/dialogs/](app/app/src/main/java/com/wboelens/polarrecorder/ui/dialogs/)
 4. Update [RecordingSettingsScreen.kt](app/app/src/main/java/com/wboelens/polarrecorder/ui/screens/RecordingSettingsScreen.kt)
 
 ### Adding a new screen
+
 1. Create composable in [ui/screens/](app/app/src/main/java/com/wboelens/polarrecorder/ui/screens/)
 2. Add route in [MainActivity.kt](app/app/src/main/java/com/wboelens/polarrecorder/MainActivity.kt) NavHost
 3. Create ViewModel if needed in [viewModels/](app/app/src/main/java/com/wboelens/polarrecorder/viewModels/)
 
 ### Modifying device settings
+
 - Edit [PolarManager.kt](app/app/src/main/java/com/wboelens/polarrecorder/managers/PolarManager.kt) for Polar SDK interactions
 - Update [DeviceViewModel.kt](app/app/src/main/java/com/wboelens/polarrecorder/viewModels/DeviceViewModel.kt) for state management
 - Modify [DeviceSettingsScreen.kt](app/app/src/main/java/com/wboelens/polarrecorder/ui/screens/DeviceSettingsScreen.kt) for UI
