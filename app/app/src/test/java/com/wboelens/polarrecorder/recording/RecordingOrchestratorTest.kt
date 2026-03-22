@@ -194,7 +194,9 @@ class RecordingOrchestratorTest {
 
       assertTrue(result is StartRecordingResult.DevicesNotConnected)
       assertEquals(
-          "My Polar H10", (result as StartRecordingResult.DevicesNotConnected).disconnectedNames)
+          "My Polar H10",
+          (result as StartRecordingResult.DevicesNotConnected).disconnectedNames,
+      )
     }
 
     @Test
@@ -258,7 +260,9 @@ class RecordingOrchestratorTest {
     fun `startRecording initializes lastData map for selected devices`() {
       val device =
           createDevice(
-              "DEVICE_001", dataTypes = setOf(PolarDeviceDataType.HR, PolarDeviceDataType.ACC))
+              "DEVICE_001",
+              dataTypes = setOf(PolarDeviceDataType.HR, PolarDeviceDataType.ACC),
+          )
       selectedDevicesFlow.value = listOf(device)
       connectedDevicesFlow.value = listOf(device)
 
